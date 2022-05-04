@@ -97,7 +97,7 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 	}
 
 	function createHeadNode($documentNode) {
-		$request = Application::getRequest();
+		$request = Application::get()->getRequest();
 		$press = $request->getPress();
 		$headNode = $documentNode->createElementNS($this->getNamespace(), 'head');
 		$timestamp = date("YmdHis")."000";
@@ -127,13 +127,16 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 		$bookNode->appendChild($this->createBookMetadataNode($documentNode, $submission, $publication));
 		$chapters = $publication->getData('chapters');
 		foreach ($chapters as $chapter) {
-			$bookNode->appendChild($this->createContentItemNode($documentNode, $submission, $publication, $chapter));
+			// Content item nodes should only be added for chapters with DOIs to be registered
+			if ($chapter->getStoredPubId('doi')) {
+				$bookNode->appendChild($this->createContentItemNode($documentNode, $submission, $publication, $chapter));
+			}
 		}
 		return $bookNode;
 	}
 
 	function createBookMetadataNode($documentNode, $submission, $publication) {
-		$request = Application::getRequest();
+		$request = Application::get()->getRequest();
 		$press = $request->getPress();
 		$locale = $publication->getData('locale');
 
@@ -221,7 +224,7 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 	}
 
 	function createSeriesMetadataNode($documentNode, $series) {
-			$request = Application::getRequest();
+			$request = Application::get()->getRequest();
 			$press = $request->getPress();
 
 			$seriesMetadataNode = $documentNode->createElement('series_metadata');
@@ -247,7 +250,7 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 	}
 
 	function createContentItemNode($documentNode, $submission, $publication, $chapter) {
-		$request = Application::getRequest();
+		$request = Application::get()->getRequest();
 		$press = $request->getPress();
 		$locale = $publication->getData('locale');
 
@@ -334,8 +337,8 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 			// Check if both givenName and familyName is set for the submission language.
 			if (!empty($familyNames[$locale]) && !empty($givenNames[$locale])) {
 				$personNameNode->setAttribute('language', PKPLocale::getIso1FromLocale($locale));
-				$personNameNode->appendChild($node = $documentNode->createElement('given_name', htmlspecialchars(ucfirst($givenNames[$locale]), ENT_COMPAT, 'UTF-8')));
-				$personNameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(ucfirst($familyNames[$locale]), ENT_COMPAT, 'UTF-8')));
+				$personNameNode->appendChild($node = $documentNode->createElement('given_name', htmlspecialchars(PKPString::ucfirst($givenNames[$locale]), ENT_COMPAT)));
+				$personNameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(PKPString::ucfirst($familyNames[$locale]), ENT_COMPAT)));
 
 				$hasAltName = false;
 				foreach($familyNames as $otherLocal => $familyName) {
@@ -348,9 +351,9 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 						$nameNode = $documentNode->createElement('name');
 						$nameNode->setAttribute('language', PKPLocale::getIso1FromLocale($otherLocal));
 
-						$nameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(ucfirst($familyName), ENT_COMPAT, 'UTF-8')));
+						$nameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(PKPString::ucfirst($familyName), ENT_COMPAT)));
 						if (isset($givenNames[$otherLocal]) && !empty($givenNames[$otherLocal])) {
-							$nameNode->appendChild($node = $documentNode->createElement('given_name', htmlspecialchars(ucfirst($givenNames[$otherLocal]), ENT_COMPAT, 'UTF-8')));
+							$nameNode->appendChild($node = $documentNode->createElement('given_name', htmlspecialchars(PKPString::ucfirst($givenNames[$otherLocal]), ENT_COMPAT)));
 						}
 
 						$altNameNode->appendChild($nameNode);
@@ -359,12 +362,12 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 
 			} elseif (!empty($givenNames[$locale])) {
 				$personNameNode->setAttribute('language', PKPLocale::getIso1FromLocale($locale));
-				$personNameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(ucfirst($givenNames[$locale]), ENT_COMPAT, 'UTF-8')));
+				$personNameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(PKPString::ucfirst($givenNames[$locale]), ENT_COMPAT)));
 
 
 				$hasAltName = false;
 				foreach($givenNames as $otherLocal => $givenName) {
-					if ($otherLocal != $locale && isset($givenName) && !empty($givenName)) {
+					if ($otherLocal != $locale && !empty($givenName)) {
 						if (!$hasAltName) {
 							$altNameNode = $documentNode->createElement('alt-name');
 							$hasAltName = true;
@@ -373,7 +376,7 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 						$nameNode = $documentNode->createElement('name');
 						$nameNode->setAttribute('language', PKPLocale::getIso1FromLocale($otherLocal));
 
-						$nameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(ucfirst($givenName), ENT_COMPAT, 'UTF-8')));
+						$nameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(PKPString::ucfirst($givenName), ENT_COMPAT)));
 						$altNameNode->appendChild($nameNode);
 					}
 				}

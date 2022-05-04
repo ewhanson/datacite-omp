@@ -1,5 +1,6 @@
 #### OMP Crossref plugin
 
+Crossref metadata deposit plugin compatible with OMP 3.3.
 
 ####  Credits
 
