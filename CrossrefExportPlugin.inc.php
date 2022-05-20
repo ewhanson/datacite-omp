@@ -6,7 +6,7 @@ import('lib.pkp.classes.plugins.ImportExportPlugin');
 import('plugins.importexport.crossref.CrossrefExportDeployment');
 define('CROSSREF_API_DEPOSIT_OK', 200);
 define('CROSSREF_STATUS_FAILED', 'failed');
-define('CROSSREF_API_URL', 'https://test.crossref.org/v2/deposits');
+define('CROSSREF_API_URL', 'https://api.crossref.org/v2/deposits');
 define('CROSSREF_API_URL_DEV', 'https://test.crossref.org/v2/deposits');
 define('EXPORT_STATUS_REGISTERED', 'registered');
 
@@ -114,7 +114,7 @@ class CrossrefExportPlugin extends ImportExportPlugin {
 			// Check for notices and errors:
 			// Notice: No ISBN! Element 'noisbn' will be used in export.
 			// Notice: Crossref failed messages
-			// Error: No ISSN for series!
+			// Notice: No ISSN for series!
 			// Error: No publisher name in Press settings
 
 			$publicationFormats = $publication->getData('publicationFormats');
@@ -146,8 +146,8 @@ class CrossrefExportPlugin extends ImportExportPlugin {
 
 			$seriesDao = DAORegistry::getDAO('SeriesDAO'); /* @var $seriesDao SeriesDAO */
 			if ($series = $seriesDao->getById($publication->getData('seriesId'))){
-				if ($series->getOnlineISSN() && $series->getPrintISSN()) {
-					$errors[] = __('plugins.importexport.crossref.error.noIssn');
+				if (!$series->getOnlineISSN() && !$series->getPrintISSN()) {
+					$notices[] = __('plugins.importexport.crossref.error.noIssn');
 				}
 			}
 
@@ -263,6 +263,7 @@ class CrossrefExportPlugin extends ImportExportPlugin {
 			// If the deposit failed
 			$failureCountNode = $xmlDoc->getElementsByTagName('failure_count')->item(0);
 			$failureCount = (int) $failureCountNode->nodeValue;
+
 			if ($failureCount > 0) {
 				$status = CROSSREF_STATUS_FAILED;
 				$result = false;
