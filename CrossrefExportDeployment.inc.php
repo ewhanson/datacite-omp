@@ -97,11 +97,13 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 	}
 
 	function createHeadNode($documentNode) {
-		$request = Application::getRequest();
+		$request = Application::get()->getRequest();
 		$press = $request->getPress();
 		$headNode = $documentNode->createElementNS($this->getNamespace(), 'head');
-		$headNode->appendChild($node = $documentNode->createElementNS($this->getNamespace(), 'doi_batch_id', $this->xmlEscape($press->getData('initials', $press->getPrimaryLocale()) . '_' . time())));
-		$headNode->appendChild($node = $documentNode->createElementNS($this->getNamespace(), 'timestamp', time()));
+		$timestamp = date("YmdHis")."000";
+
+		$headNode->appendChild($node = $documentNode->createElementNS($this->getNamespace(), 'doi_batch_id', $this->xmlEscape($press->getData('initials', $press->getPrimaryLocale()) . '_' . $timestamp)));
+		$headNode->appendChild($node = $documentNode->createElementNS($this->getNamespace(), 'timestamp', $timestamp));
 		$depositorNode = $documentNode->createElementNS($this->getNamespace(), 'depositor');
 		$depositorName = $press->getData('supportName');
 		$depositorEmail = $press->getData('supportEmail');
@@ -125,13 +127,16 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 		$bookNode->appendChild($this->createBookMetadataNode($documentNode, $submission, $publication));
 		$chapters = $publication->getData('chapters');
 		foreach ($chapters as $chapter) {
-			$bookNode->appendChild($this->createContentItemNode($documentNode, $submission, $publication, $chapter));
+			// Content item nodes should only be added for chapters with DOIs to be registered
+			if ($chapter->getStoredPubId('doi')) {
+				$bookNode->appendChild($this->createContentItemNode($documentNode, $submission, $publication, $chapter));
+			}
 		}
 		return $bookNode;
 	}
 
 	function createBookMetadataNode($documentNode, $submission, $publication) {
-		$request = Application::getRequest();
+		$request = Application::get()->getRequest();
 		$press = $request->getPress();
 		$locale = $publication->getData('locale');
 
@@ -139,7 +144,7 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 		// Consider adding book_set_metadata option in cases where a series does not have an ISSN
 		$seriesDao = DAORegistry::getDAO('SeriesDAO'); /* @var $seriesDao SeriesDAO */
 		$series = $seriesDao->getById($publication->getData('seriesId'));
-		if ($series){
+		if ($series && ($series->getOnlineISSN() || $series->getPrintISSN())){
 			$bookMetadataNodeType = 'book_series_metadata';
 		} else{
 			$bookMetadataNodeType = 'book_metadata';
@@ -148,8 +153,8 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 		$bookMetadataNode = $documentNode->createElementNS($this->getNamespace(), $bookMetadataNodeType);
 		$bookMetadataNode->setAttribute('language', PKPLocale::getIso1FromLocale($locale));
 
-		// If a series, add series metadata
-		if ($series){
+		// If a series and the series has ISSN, add series metadata
+		if ($series && ($series->getOnlineISSN() || $series->getPrintISSN())) {
 			$bookMetadataNode->appendChild($this->createSeriesMetadataNode($documentNode, $series));
 		}
 
@@ -219,7 +224,7 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 	}
 
 	function createSeriesMetadataNode($documentNode, $series) {
-			$request = Application::getRequest();
+			$request = Application::get()->getRequest();
 			$press = $request->getPress();
 
 			$seriesMetadataNode = $documentNode->createElement('series_metadata');
@@ -245,7 +250,7 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 	}
 
 	function createContentItemNode($documentNode, $submission, $publication, $chapter) {
-		$request = Application::getRequest();
+		$request = Application::get()->getRequest();
 		$press = $request->getPress();
 		$locale = $publication->getData('locale');
 
@@ -309,15 +314,15 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 	function createContributorsNode($documentNode, $authors, $locale, $isChapter = false) {
 
 		$contributorsNode = $documentNode->createElement('contributors');
-		
+
 		$isFirst = true;
 		foreach ($authors as $author) {
 			$personNameNode = $documentNode->createElement('person_name');
-			
+
 			if ($isChapter || !$author->getData('isVolumeEditor')) {
 				$personNameNode->setAttribute('contributor_role', 'author');
 			} else {
-				$personNameNode->setAttribute('contributor_role', 'editor');			
+				$personNameNode->setAttribute('contributor_role', 'editor');
 			}
 
 			if ($isFirst) {
@@ -325,45 +330,68 @@ class CrossrefExportDeployment extends PKPImportExportDeployment {
 			} else {
 				$personNameNode->setAttribute('sequence', 'additional');
 			}
-			
+
 			$familyNames = $author->getFamilyName(null);
 			$givenNames = $author->getGivenName(null);
 
 			// Check if both givenName and familyName is set for the submission language.
-			if (isset($familyNames[$locale]) && isset($givenNames[$locale])) {
+			if (!empty($familyNames[$locale]) && !empty($givenNames[$locale])) {
 				$personNameNode->setAttribute('language', PKPLocale::getIso1FromLocale($locale));
-				$personNameNode->appendChild($node = $documentNode->createElement('given_name', htmlspecialchars(ucfirst($givenNames[$locale]), ENT_COMPAT, 'UTF-8')));
-				$personNameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(ucfirst($familyNames[$locale]), ENT_COMPAT, 'UTF-8')));
+				$personNameNode->appendChild($node = $documentNode->createElement('given_name', htmlspecialchars(PKPString::ucfirst($givenNames[$locale]), ENT_COMPAT)));
+				$personNameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(PKPString::ucfirst($familyNames[$locale]), ENT_COMPAT)));
 
 				$hasAltName = false;
 				foreach($familyNames as $otherLocal => $familyName) {
 					if ($otherLocal != $locale && isset($familyName) && !empty($familyName)) {
 						if (!$hasAltName) {
 							$altNameNode = $documentNode->createElement('alt-name');
-							$personNameNode->appendChild($altNameNode);
-
 							$hasAltName = true;
 						}
 
 						$nameNode = $documentNode->createElement('name');
 						$nameNode->setAttribute('language', PKPLocale::getIso1FromLocale($otherLocal));
 
-						$nameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(ucfirst($familyName), ENT_COMPAT, 'UTF-8')));
+						$nameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(PKPString::ucfirst($familyName), ENT_COMPAT)));
 						if (isset($givenNames[$otherLocal]) && !empty($givenNames[$otherLocal])) {
-							$nameNode->appendChild($node = $documentNode->createElement('given_name', htmlspecialchars(ucfirst($givenNames[$otherLocal]), ENT_COMPAT, 'UTF-8')));
+							$nameNode->appendChild($node = $documentNode->createElement('given_name', htmlspecialchars(PKPString::ucfirst($givenNames[$otherLocal]), ENT_COMPAT)));
 						}
 
 						$altNameNode->appendChild($nameNode);
 					}
 				}
 
-			} else {
-				$personNameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(ucfirst($author->getFullName(false)), ENT_COMPAT, 'UTF-8')));
+			} elseif (!empty($givenNames[$locale])) {
+				$personNameNode->setAttribute('language', PKPLocale::getIso1FromLocale($locale));
+				$personNameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(PKPString::ucfirst($givenNames[$locale]), ENT_COMPAT)));
+
+
+				$hasAltName = false;
+				foreach($givenNames as $otherLocal => $givenName) {
+					if ($otherLocal != $locale && !empty($givenName)) {
+						if (!$hasAltName) {
+							$altNameNode = $documentNode->createElement('alt-name');
+							$hasAltName = true;
+						}
+
+						$nameNode = $documentNode->createElement('name');
+						$nameNode->setAttribute('language', PKPLocale::getIso1FromLocale($otherLocal));
+
+						$nameNode->appendChild($node = $documentNode->createElement('surname', htmlspecialchars(PKPString::ucfirst($givenName), ENT_COMPAT)));
+						$altNameNode->appendChild($nameNode);
+					}
+				}
+
+
 			}
 
 			if ($author->getData('orcid')) {
 				$personNameNode->appendChild($node = $documentNode->createElement('ORCID', $author->getData('orcid')));
 			}
+
+			if ($hasAltName && $altNameNode) {
+				$personNameNode->appendChild($altNameNode);
+			}
+
 			$contributorsNode->appendChild($personNameNode);
 			$isFirst = false;
 		}

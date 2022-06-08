@@ -5,8 +5,9 @@ use Illuminate\Database\Capsule\Manager as Capsule;
 import('lib.pkp.classes.plugins.ImportExportPlugin');
 import('plugins.importexport.crossref.CrossrefExportDeployment');
 define('CROSSREF_API_DEPOSIT_OK', 200);
+define('CROSSREF_API_DEPOSIT_ERROR_FROM_CROSSREF', 403);
 define('CROSSREF_STATUS_FAILED', 'failed');
-define('CROSSREF_API_URL', 'https://test.crossref.org/v2/deposits');
+define('CROSSREF_API_URL', 'https://api.crossref.org/v2/deposits');
 define('CROSSREF_API_URL_DEV', 'https://test.crossref.org/v2/deposits');
 define('EXPORT_STATUS_REGISTERED', 'registered');
 
@@ -50,7 +51,7 @@ class CrossrefExportPlugin extends ImportExportPlugin {
 	}
 
 	function getSettings(TemplateManager $templateMgr) {
-		$request = Application::getRequest();
+		$request = Application::get()->getRequest();
 		$press = $request->getPress();
 		$username = $this->getSetting($press->getId(), 'username');
 		$templateMgr->assign('username', $username);
@@ -114,7 +115,7 @@ class CrossrefExportPlugin extends ImportExportPlugin {
 			// Check for notices and errors:
 			// Notice: No ISBN! Element 'noisbn' will be used in export.
 			// Notice: Crossref failed messages
-			// Error: No ISSN for series!
+			// Notice: No ISSN for series!
 			// Error: No publisher name in Press settings
 
 			$publicationFormats = $publication->getData('publicationFormats');
@@ -146,8 +147,8 @@ class CrossrefExportPlugin extends ImportExportPlugin {
 
 			$seriesDao = DAORegistry::getDAO('SeriesDAO'); /* @var $seriesDao SeriesDAO */
 			if ($series = $seriesDao->getById($publication->getData('seriesId'))){
-				if ($series->getOnlineISSN() && $series->getPrintISSN()) {
-					$errors[] = __('plugins.importexport.crossref.error.noIssn');
+				if (!$series->getOnlineISSN() && !$series->getPrintISSN()) {
+					$notices[] = __('plugins.importexport.crossref.notice.noIssn');
 				}
 			}
 
@@ -187,14 +188,17 @@ class CrossrefExportPlugin extends ImportExportPlugin {
 
 	function exportSubmissions($submissionIds) {
 		import('lib.pkp.classes.file.FileManager');
-		$submissionDao = Application::getSubmissionDAO();
-		$request = Application::getRequest();
+		/** @var SubmissionDAO $submissionDao */
+		$submissionDao = DAORegistry::getDAO('SubmissionDAO');
+		$request = Application::get()->getRequest();
+		$context = $request->getContext();
 		$press = $request->getPress();
 		$fileManager = new FileManager();
 		$result = array();
 		foreach ($submissionIds as $submissionId) {
 			$deployment = new CrossrefExportDeployment($request, $this);
-			$submission = $submissionDao->getById($submissionId, $request->getContext()->getId());
+			/** @var Submission $submission */
+			$submission = $submissionDao->getById($submissionId);
 			$publication = $submission->getCurrentPublication();
 			$doi = $publication->getStoredPubId('doi');
 			if ($doi) {
@@ -214,78 +218,87 @@ class CrossrefExportPlugin extends ImportExportPlugin {
 
 	function depositXML($submission, $context, $filename) {
 		$status = null;
-		$msg = null;
+		$msgSave = null;
 
-		import('lib.pkp.classes.helpers.PKPCurlHelper');
-		$curlCh = PKPCurlHelper::getCurlObject();
-
-		curl_setopt($curlCh, CURLOPT_RETURNTRANSFER, true);
-		curl_setopt($curlCh, CURLOPT_POST, true);
-		curl_setopt($curlCh, CURLOPT_HEADER, 0);
-
-		// Use a different endpoint for testing and production.
-		$endpoint = ($this->isTestMode($context) ? CROSSREF_API_URL_DEV : CROSSREF_API_URL);
-		curl_setopt($curlCh, CURLOPT_URL, $endpoint);
-		// Set the form post fields
-		$username = $this->getSetting($context->getId(), 'username');
-		$password = $this->getSetting($context->getId(), 'password');
+		$httpClient = Application::get()->getHttpClient();
 		assert(is_readable($filename));
-		if (function_exists('curl_file_create')) {
-			curl_setopt($curlCh, CURLOPT_SAFE_UPLOAD, true);
-			$cfile = new CURLFile($filename);
-		} else {
-			$cfile = "@$filename";
-		}
-		$data = array('operation' => 'doMDUpload', 'usr' => $username, 'pwd' => $password, 'mdFile' => $cfile);
-		curl_setopt($curlCh, CURLOPT_POSTFIELDS, $data);
-		$response = curl_exec($curlCh);
 
-		if ($response === false) {
-			$result = array(array('plugins.importexport.common.register.error.mdsError', 'No response from server.'));
-		} elseif (curl_getinfo($curlCh, CURLINFO_HTTP_CODE) != CROSSREF_API_DEPOSIT_OK) {
-			// These are the failures that occur immediatelly on request
-			// and can not be accessed later, so we save the falure message in the DB
-			$xmlDoc = new DOMDocument();
-			$xmlDoc->loadXML($response);
-			// Get batch ID
-			$batchIdNode = $xmlDoc->getElementsByTagName('batch_id')->item(0);
-			// Get re message
-			$msg = $xmlDoc->getElementsByTagName('msg')->item(0)->nodeValue;
+		try {
+			$response = $httpClient->request('POST',
+				$this->isTestMode($context) ? CROSSREF_API_URL_DEV : CROSSREF_API_URL,
+				[
+					'multipart' => [
+						[
+							'name'     => 'usr',
+							'contents' => $this->getSetting($context->getId(), 'username'),
+						],
+						[
+							'name'     => 'pwd',
+							'contents' => $this->getSetting($context->getId(), 'password'),
+						],
+						[
+							'name'     => 'operation',
+							'contents' => 'doMDUpload',
+						],
+						[
+							'name'     => 'mdFile',
+							'contents' => fopen($filename, 'r'),
+						],
+					]
+				]
+			);
+		} catch (\GuzzleHttp\Exception\RequestException $e) {
+			$returnMessage = $e->getMessage();
+			if ($e->hasResponse()) {
+				$eResponseBody = $e->getResponse()->getBody(true);
+				$eStatusCode = $e->getResponse()->getStatusCode();
+				if ($eStatusCode == CROSSREF_API_DEPOSIT_ERROR_FROM_CROSSREF) {
+					$xmlDoc = new DOMDocument();
+					$xmlDoc->loadXML($eResponseBody);
+					$batchIdNode = $xmlDoc->getElementsByTagName('batch_id')->item(0);
+					$msgSave = $xmlDoc->getElementsByTagName('msg')->item(0)->nodeValue;
+					$msgSave = $msgSave . "\n" . $eResponseBody;
+					$status = CROSSREF_STATUS_FAILED;
+					$this->updateDepositStatus($context, $submission, $status, $batchIdNode->nodeValue, $msgSave);
+					$returnMessage = $msgSave;
+				} else {
+					$returnMessage = $eResponseBody;
+				}
+
+				$returnMessage .= ' (' .$eStatusCode . ' ' . $e->getResponse()->getReasonPhrase() . ')';
+			}
+			return [['plugins.importexport.crossref.register.error.mdsError', $returnMessage]];
+		}
+
+		// Get DOMDocument from the response XML string
+		$xmlDoc = new DOMDocument();
+		$xmlDoc->loadXML($response);
+		$batchIdNode = $xmlDoc->getElementsByTagName('batch_id')->item(0);
+
+		// Get the DOI deposit status
+		// If the deposit failed
+		$failureCountNode = $xmlDoc->getElementsByTagName('failure_count')->item(0);
+		$failureCount = (int) $failureCountNode->nodeValue;
+
+		if ($failureCount > 0) {
 			$status = CROSSREF_STATUS_FAILED;
 			$result = false;
 		} else {
-			// Get DOMDocument from the response XML string
-			$xmlDoc = new DOMDocument();
-			$xmlDoc->loadXML($response);
-			$batchIdNode = $xmlDoc->getElementsByTagName('batch_id')->item(0);
+			// Deposit was received
+			$status = EXPORT_STATUS_REGISTERED;
+			$result = true;
 
-			// Get the DOI deposit status
-			// If the deposit failed
-			$failureCountNode = $xmlDoc->getElementsByTagName('failure_count')->item(0);
-			$failureCount = (int) $failureCountNode->nodeValue;
-			if ($failureCount > 0) {
-				$status = CROSSREF_STATUS_FAILED;
-				$result = false;
-			} else {
-				// Deposit was received
-				$status = EXPORT_STATUS_REGISTERED;
-				$result = true;
-
-				// If there were some warnings, display them
-				$warningCountNode = $xmlDoc->getElementsByTagName('warning_count')->item(0);
-				$warningCount = (int) $warningCountNode->nodeValue;
-				if ($warningCount > 0) {
-					$result = array(array('plugins.importexport.crossref.register.success.warning', htmlspecialchars($response)));
-				}
+			// If there were some warnings, display them
+			$warningCountNode = $xmlDoc->getElementsByTagName('warning_count')->item(0);
+			$warningCount = (int) $warningCountNode->nodeValue;
+			if ($warningCount > 0) {
+				$result = array(array('plugins.importexport.crossref.register.success.warning', htmlspecialchars($response)));
 			}
 		}
 
 		// Update the status
-		if ($status) {
-			$this->updateDepositStatus($context, $submission, $status, $batchIdNode->nodeValue, $msg);
-		}
+		$this->updateDepositStatus($context, $submission, $status, $batchIdNode->nodeValue, $msgSave);
 
-		curl_close($curlCh);
 		return $result;
 	}
 
